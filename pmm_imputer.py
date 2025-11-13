@@ -5,7 +5,7 @@ Implements PMM algorithm for semi-parametric imputation
 
 import numpy as np
 import pandas as pd
-from typing import List, Optional
+from typing import List, Optional, Dict
 from sklearn.linear_model import LinearRegression, BayesianRidge
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
@@ -68,10 +68,11 @@ class PMMImputer:
         self,
         data: pd.DataFrame,
         target_column: str,
-        predictor_columns: List[str]
+        predictor_columns: List[str],
+        predictor_weights: Optional[Dict[str, float]] = None
     ) -> np.ndarray:
         """
-        Impute missing values in the target column using PMM.
+        Impute missing values in the target column using enhanced PMM.
 
         Parameters:
         -----------
@@ -81,6 +82,8 @@ class PMMImputer:
             Column to impute
         predictor_columns : List[str]
             Columns to use as predictors
+        predictor_weights : Dict[str, float], optional
+            Weights for each predictor (correlation strengths)
 
         Returns:
         --------
@@ -113,27 +116,72 @@ class PMMImputer:
         X_missing = predictors[missing_mask]
         y_observed = target[observed_mask].values
 
-        # Scale the predictors
+        # Create weight vector for predictors
+        if predictor_weights:
+            weight_vector = np.array([predictor_weights.get(col, 1.0) for col in predictor_columns])
+            # Normalize to reasonable scale
+            weight_vector = weight_vector / weight_vector.sum() * len(weight_vector)
+        else:
+            weight_vector = np.ones(len(predictor_columns))
+
+        # Scale the predictors with weights
         X_observed_scaled = self.scaler.fit_transform(X_observed)
         X_missing_scaled = self.scaler.transform(X_missing)
 
+        # Apply weights to scaled predictors
+        X_observed_weighted = X_observed_scaled * weight_vector
+        X_missing_weighted = X_missing_scaled * weight_vector
+
         # Fit the prediction model
-        self.model.fit(X_observed_scaled, y_observed)
+        self.model.fit(X_observed_weighted, y_observed)
 
         # Predict for both observed and missing
-        y_observed_pred = self.model.predict(X_observed_scaled)
-        y_missing_pred = self.model.predict(X_missing_scaled)
+        # Add small stochastic noise to predictions for uncertainty
+        y_observed_pred = self.model.predict(X_observed_weighted)
+        y_missing_pred = self.model.predict(X_missing_weighted)
+
+        # Add stochastic component based on residual standard deviation
+        residuals = y_observed - y_observed_pred
+        residual_std = np.std(residuals)
+
+        # Add noise to missing predictions (stochastic regression component)
+        if residual_std > 0:
+            noise = self.rng.normal(0, residual_std * 0.5, len(y_missing_pred))
+            y_missing_pred_noisy = y_missing_pred + noise
+        else:
+            y_missing_pred_noisy = y_missing_pred
 
         # For each missing value, find donors and select one
         imputed_values = np.zeros(missing_mask.sum())
 
-        for i, pred_value in enumerate(y_missing_pred):
-            # Find the k nearest observed predictions
-            distances = np.abs(y_observed_pred - pred_value)
-            nearest_indices = np.argpartition(distances, min(self.n_neighbors, len(distances) - 1))[:self.n_neighbors]
+        for i, (pred_value, x_missing) in enumerate(zip(y_missing_pred_noisy, X_missing_weighted)):
+            # Compute combined distance: prediction space + predictor space
+            # Distance in prediction space (primary)
+            pred_distances = np.abs(y_observed_pred - pred_value)
 
-            # Randomly select one donor from the nearest neighbors
-            donor_idx = self.rng.choice(nearest_indices)
+            # Distance in predictor space (secondary, for tie-breaking)
+            predictor_distances = np.sqrt(np.sum((X_observed_weighted - x_missing) ** 2, axis=1))
+
+            # Normalize both distances
+            pred_dist_norm = pred_distances / (np.std(pred_distances) + 1e-10)
+            predictor_dist_norm = predictor_distances / (np.std(predictor_distances) + 1e-10)
+
+            # Combined distance: 70% prediction, 30% predictor space
+            combined_distances = 0.7 * pred_dist_norm + 0.3 * predictor_dist_norm
+
+            # Find the k nearest neighbors
+            n_donors = min(self.n_neighbors, len(combined_distances))
+            nearest_indices = np.argpartition(combined_distances, n_donors - 1)[:n_donors]
+
+            # Weighted random selection from donors
+            # Donors closer in distance have higher probability
+            donor_distances = combined_distances[nearest_indices]
+            # Convert distances to weights (inverse distance)
+            donor_weights = 1.0 / (donor_distances + 0.01)  # Add small constant to avoid division by zero
+            donor_weights = donor_weights / donor_weights.sum()
+
+            # Select donor with weighted probability
+            donor_idx = self.rng.choice(nearest_indices, p=donor_weights)
             imputed_values[i] = y_observed[donor_idx]
 
         # Create result array
@@ -146,7 +194,8 @@ class PMMImputer:
         self,
         data: pd.DataFrame,
         target_column: str,
-        predictor_columns: Optional[List[str]] = None
+        predictor_columns: Optional[List[str]] = None,
+        predictor_weights: Optional[Dict[str, float]] = None
     ) -> pd.Series:
         """
         Convenience method to impute a single column and return as Series.
@@ -159,6 +208,8 @@ class PMMImputer:
             Column to impute
         predictor_columns : List[str], optional
             Columns to use as predictors. If None, uses all other columns.
+        predictor_weights : Dict[str, float], optional
+            Weights for each predictor (correlation strengths)
 
         Returns:
         --------
@@ -168,7 +219,7 @@ class PMMImputer:
         if predictor_columns is None:
             predictor_columns = [col for col in data.columns if col != target_column]
 
-        imputed_values = self.fit_transform(data, target_column, predictor_columns)
+        imputed_values = self.fit_transform(data, target_column, predictor_columns, predictor_weights)
         return pd.Series(imputed_values, index=data.index, name=target_column)
 
 
@@ -205,7 +256,8 @@ class AdaptivePMMImputer(PMMImputer):
         self,
         data: pd.DataFrame,
         target_column: str,
-        predictor_columns: List[str]
+        predictor_columns: List[str],
+        predictor_weights: Optional[Dict[str, float]] = None
     ) -> np.ndarray:
         """
         Impute with adaptive neighbor selection.
@@ -230,7 +282,7 @@ class AdaptivePMMImputer(PMMImputer):
         self.n_neighbors = min(self.n_neighbors, max(self.min_neighbors, n_observed // 3))
 
         # Call parent fit_transform
-        result = super().fit_transform(data, target_column, predictor_columns)
+        result = super().fit_transform(data, target_column, predictor_columns, predictor_weights)
 
         # Restore original n_neighbors
         self.n_neighbors = original_n

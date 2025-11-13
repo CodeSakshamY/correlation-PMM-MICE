@@ -27,31 +27,32 @@ class HybridMICEImputer:
 
     def __init__(
         self,
-        n_iterations: int = 10,
-        n_neighbors: int = 5,
-        correlation_threshold: float = 0.3,
-        max_predictors: int = 10,
-        pmm_model_type: str = 'linear',
+        n_iterations: int = 15,
+        n_neighbors: int = 10,
+        correlation_threshold: float = 0.25,
+        max_predictors: int = 15,
+        pmm_model_type: str = 'bayesian',
         convergence_threshold: float = 0.001,
         random_state: Optional[int] = None,
         verbose: bool = False,
-        exclude_columns: Optional[List[str]] = None
+        exclude_columns: Optional[List[str]] = None,
+        use_mixed_correlations: bool = True
     ):
         """
-        Initialize the Hybrid MICE imputer.
+        Initialize the Hybrid MICE imputer with enhanced correlation and PMM.
 
         Parameters:
         -----------
-        n_iterations : int, default=10
-            Maximum number of MICE iterations
-        n_neighbors : int, default=5
-            Number of neighbors for PMM
-        correlation_threshold : float, default=0.3
-            Minimum correlation to consider for predictor selection
-        max_predictors : int, default=10
-            Maximum number of predictors to use per variable
-        pmm_model_type : str, default='linear'
-            Model type for PMM: 'linear', 'bayesian', or 'rf'
+        n_iterations : int, default=15
+            Maximum number of MICE iterations (increased for better convergence)
+        n_neighbors : int, default=10
+            Number of neighbors for PMM (increased for better donor pool)
+        correlation_threshold : float, default=0.25
+            Minimum correlation to consider for predictor selection (lowered for more predictors)
+        max_predictors : int, default=15
+            Maximum number of predictors to use per variable (increased for better modeling)
+        pmm_model_type : str, default='bayesian'
+            Model type for PMM: 'linear', 'bayesian', or 'rf' (bayesian for uncertainty)
         convergence_threshold : float, default=0.001
             Threshold for convergence detection
         random_state : int, optional
@@ -60,6 +61,8 @@ class HybridMICEImputer:
             Whether to print progress information
         exclude_columns : List[str], optional
             Columns to exclude from imputation (e.g., ID columns like 'ptid')
+        use_mixed_correlations : bool, default=True
+            Use mixed correlation methods (Pearson, Spearman, Kendall) for robust estimation
         """
         self.n_iterations = n_iterations
         self.n_neighbors = n_neighbors
@@ -70,10 +73,12 @@ class HybridMICEImputer:
         self.random_state = random_state
         self.verbose = verbose
         self.exclude_columns = exclude_columns or []
+        self.use_mixed_correlations = use_mixed_correlations
 
         # Components
         self.correlation_analyzer = CorrelationAnalyzer(
-            correlation_threshold=correlation_threshold
+            correlation_threshold=correlation_threshold,
+            use_mixed_correlations=use_mixed_correlations
         )
         self.imputer = AdaptivePMMImputer(
             n_neighbors=n_neighbors,
@@ -127,11 +132,11 @@ class HybridMICEImputer:
             if imputed[col].dtype in [np.float64, np.float32, np.int64, np.int32]:
                 # Numerical: use mean
                 mean_val = imputed[col].mean()
-                imputed[col].fillna(mean_val, inplace=True)
+                imputed.loc[:, col] = imputed[col].fillna(mean_val)
             else:
                 # Categorical: use mode
                 mode_val = imputed[col].mode()[0] if len(imputed[col].mode()) > 0 else imputed[col].iloc[0]
-                imputed[col].fillna(mode_val, inplace=True)
+                imputed.loc[:, col] = imputed[col].fillna(mode_val)
 
         return imputed
 
@@ -143,12 +148,12 @@ class HybridMICEImputer:
         """
         Compute convergence metric based on change in imputed values.
         Only considers numeric columns that are being imputed.
+        Uses robust standardization and tracks both mean and max changes.
         """
         if data_previous is None:
             return float('inf')
 
-        total_change = 0
-        n_imputed = 0
+        changes = []
 
         # Only compute convergence for numeric columns being imputed
         for col in self.numeric_columns_with_missing:
@@ -157,17 +162,39 @@ class HybridMICEImputer:
                 current_vals = data_current.loc[missing_mask, col]
                 previous_vals = data_previous.loc[missing_mask, col]
 
-                # Normalize by standard deviation
-                std = data_current[col].std()
-                if std > 0:
-                    change = np.mean(np.abs(current_vals - previous_vals) / std)
+                # Compute absolute differences
+                abs_diff = np.abs(current_vals - previous_vals)
+
+                # Normalize by robust standard deviation (using MAD - median absolute deviation)
+                col_values = data_current[col].values
+                median = np.median(col_values)
+                mad = np.median(np.abs(col_values - median))
+
+                if mad > 0:
+                    # Use MAD for robust scaling
+                    normalized_change = abs_diff / (1.4826 * mad)  # 1.4826 * MAD approximates std
                 else:
-                    change = np.mean(np.abs(current_vals - previous_vals))
+                    # Fallback to standard deviation
+                    std = data_current[col].std()
+                    if std > 0:
+                        normalized_change = abs_diff / std
+                    else:
+                        # If no variation, use absolute change
+                        normalized_change = abs_diff
 
-                total_change += change
-                n_imputed += 1
+                # Use mean change for this column
+                changes.append(np.mean(normalized_change))
 
-        return total_change / n_imputed if n_imputed > 0 else 0
+        if len(changes) == 0:
+            return 0
+
+        # Return average change across all columns
+        # Also consider max change to ensure all columns have converged
+        mean_change = np.mean(changes)
+        max_change = np.max(changes)
+
+        # Weighted combination: prioritize mean but consider max
+        return 0.7 * mean_change + 0.3 * max_change
 
     def fit_transform(
         self,
@@ -275,18 +302,25 @@ class HybridMICEImputer:
                     missing_mask = self.missing_indicators[col]
                     temp_data.loc[missing_mask, col] = np.nan
 
-                    # Impute the column using PMM
+                    # Get correlation weights for predictors
+                    predictor_weights = self.correlation_analyzer.get_predictor_weights(col)
+                    # Filter weights to only valid predictors
+                    filtered_weights = {k: v for k, v in predictor_weights.items() if k in valid_predictors}
+
+                    # Impute the column using PMM with correlation weights
                     imputed_col = self.imputer.fit_transform(
                         temp_data,
                         col,
-                        valid_predictors
+                        valid_predictors,
+                        predictor_weights=filtered_weights
                     )
 
                     # Update only the originally missing values
                     imputed.loc[missing_mask, col] = imputed_col[missing_mask]
 
                     if self.verbose:
-                        print(f"  {col}: Imputed with {len(valid_predictors)} predictors")
+                        n_weighted = len(filtered_weights)
+                        print(f"  {col}: Imputed with {len(valid_predictors)} predictors ({n_weighted} weighted)")
 
                 except Exception as e:
                     if self.verbose:
