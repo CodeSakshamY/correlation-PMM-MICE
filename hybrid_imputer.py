@@ -270,7 +270,12 @@ class HybridMICEImputer:
                     # Create temporary dataset with only needed columns
                     temp_data = imputed[[col] + valid_predictors].copy()
 
-                    # Impute the column
+                    # CRITICAL FIX: Restore original missing values in the target column
+                    # so that PMM can actually see them and perform proper imputation
+                    missing_mask = self.missing_indicators[col]
+                    temp_data.loc[missing_mask, col] = np.nan
+
+                    # Impute the column using PMM
                     imputed_col = self.imputer.fit_transform(
                         temp_data,
                         col,
@@ -278,7 +283,6 @@ class HybridMICEImputer:
                     )
 
                     # Update only the originally missing values
-                    missing_mask = self.missing_indicators[col]
                     imputed.loc[missing_mask, col] = imputed_col[missing_mask]
 
                     if self.verbose:
