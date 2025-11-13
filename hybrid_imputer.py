@@ -362,3 +362,96 @@ class HybridMICEImputer:
 
         except ImportError:
             print("Plotting requires matplotlib. Install with: pip install matplotlib")
+
+    @staticmethod
+    def load_data(
+        file_path: str,
+        sheet_name: Optional[Union[str, int]] = 0,
+        **kwargs
+    ) -> pd.DataFrame:
+        """
+        Load data from CSV or Excel (.xlsx) file.
+
+        Parameters:
+        -----------
+        file_path : str
+            Path to the file (supports .csv, .xlsx, .xls)
+        sheet_name : str or int, default=0
+            Sheet name or index for Excel files (ignored for CSV)
+        **kwargs : dict
+            Additional arguments passed to pd.read_csv() or pd.read_excel()
+
+        Returns:
+        --------
+        data : pd.DataFrame
+            Loaded data
+
+        Examples:
+        ---------
+        >>> # Load CSV file
+        >>> data = HybridMICEImputer.load_data('data.csv')
+        >>>
+        >>> # Load Excel file (first sheet)
+        >>> data = HybridMICEImputer.load_data('data.xlsx')
+        >>>
+        >>> # Load specific sheet from Excel
+        >>> data = HybridMICEImputer.load_data('data.xlsx', sheet_name='Sheet2')
+        >>> data = HybridMICEImputer.load_data('data.xlsx', sheet_name=1)
+        """
+        file_path = str(file_path)
+
+        if file_path.endswith('.csv'):
+            return pd.read_csv(file_path, **kwargs)
+        elif file_path.endswith(('.xlsx', '.xls')):
+            return pd.read_excel(file_path, sheet_name=sheet_name, **kwargs)
+        else:
+            # Try to infer format
+            try:
+                return pd.read_excel(file_path, sheet_name=sheet_name, **kwargs)
+            except:
+                return pd.read_csv(file_path, **kwargs)
+
+    @staticmethod
+    def save_data(
+        data: pd.DataFrame,
+        file_path: str,
+        sheet_name: str = 'Sheet1',
+        index: bool = False,
+        **kwargs
+    ) -> None:
+        """
+        Save data to CSV or Excel (.xlsx) file.
+
+        Parameters:
+        -----------
+        data : pd.DataFrame
+            Data to save
+        file_path : str
+            Path to save the file (supports .csv, .xlsx)
+        sheet_name : str, default='Sheet1'
+            Sheet name for Excel files (ignored for CSV)
+        index : bool, default=False
+            Whether to include the index in the saved file
+        **kwargs : dict
+            Additional arguments passed to pd.to_csv() or pd.to_excel()
+
+        Examples:
+        ---------
+        >>> # Save to CSV
+        >>> HybridMICEImputer.save_data(imputed_data, 'output.csv')
+        >>>
+        >>> # Save to Excel
+        >>> HybridMICEImputer.save_data(imputed_data, 'output.xlsx')
+        >>>
+        >>> # Save to Excel with custom sheet name
+        >>> HybridMICEImputer.save_data(imputed_data, 'output.xlsx', sheet_name='Imputed Data')
+        """
+        file_path = str(file_path)
+
+        if file_path.endswith('.csv'):
+            data.to_csv(file_path, index=index, **kwargs)
+        elif file_path.endswith('.xlsx'):
+            data.to_excel(file_path, sheet_name=sheet_name, index=index, **kwargs)
+        else:
+            # Default to CSV if extension not recognized
+            data.to_csv(file_path, index=index, **kwargs)
