@@ -34,7 +34,8 @@ class HybridMICEImputer:
         pmm_model_type: str = 'linear',
         convergence_threshold: float = 0.001,
         random_state: Optional[int] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        exclude_columns: Optional[List[str]] = None
     ):
         """
         Initialize the Hybrid MICE imputer.
@@ -57,6 +58,8 @@ class HybridMICEImputer:
             Random state for reproducibility
         verbose : bool, default=False
             Whether to print progress information
+        exclude_columns : List[str], optional
+            Columns to exclude from imputation (e.g., ID columns like 'ptid')
         """
         self.n_iterations = n_iterations
         self.n_neighbors = n_neighbors
@@ -66,6 +69,7 @@ class HybridMICEImputer:
         self.convergence_threshold = convergence_threshold
         self.random_state = random_state
         self.verbose = verbose
+        self.exclude_columns = exclude_columns or []
 
         # Components
         self.correlation_analyzer = CorrelationAnalyzer(
@@ -80,6 +84,7 @@ class HybridMICEImputer:
         # State
         self.missing_indicators = None
         self.columns_with_missing = []
+        self.numeric_columns_with_missing = []
         self.imputation_order = []
         self.convergence_history = []
 
@@ -90,12 +95,26 @@ class HybridMICEImputer:
             col for col in data.columns if self.missing_indicators[col].any()
         ]
 
+        # Filter to only numeric columns for PMM imputation
+        # Exclude non-numeric columns and any user-specified exclusions
+        self.numeric_columns_with_missing = [
+            col for col in self.columns_with_missing
+            if col not in self.exclude_columns
+            and data[col].dtype in [np.float64, np.float32, np.int64, np.int32, np.float16, np.int16, np.int8]
+        ]
+
         if self.verbose:
             print(f"Columns with missing data: {len(self.columns_with_missing)}")
+            print(f"Numeric columns to impute with PMM: {len(self.numeric_columns_with_missing)}")
+            if len(self.columns_with_missing) > len(self.numeric_columns_with_missing):
+                excluded = set(self.columns_with_missing) - set(self.numeric_columns_with_missing)
+                print(f"Excluded columns (non-numeric or specified): {list(excluded)}")
+            print()
             for col in self.columns_with_missing:
                 n_missing = self.missing_indicators[col].sum()
                 pct_missing = 100 * n_missing / len(data)
-                print(f"  {col}: {n_missing} ({pct_missing:.2f}%)")
+                col_type = "numeric (PMM)" if col in self.numeric_columns_with_missing else "excluded"
+                print(f"  {col}: {n_missing} ({pct_missing:.2f}%) - {col_type}")
 
     def _initialize_imputation(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -123,6 +142,7 @@ class HybridMICEImputer:
     ) -> float:
         """
         Compute convergence metric based on change in imputed values.
+        Only considers numeric columns that are being imputed.
         """
         if data_previous is None:
             return float('inf')
@@ -130,7 +150,8 @@ class HybridMICEImputer:
         total_change = 0
         n_imputed = 0
 
-        for col in self.columns_with_missing:
+        # Only compute convergence for numeric columns being imputed
+        for col in self.numeric_columns_with_missing:
             missing_mask = self.missing_indicators[col]
             if missing_mask.any():
                 current_vals = data_current.loc[missing_mask, col]
@@ -181,26 +202,32 @@ class HybridMICEImputer:
             self.columns_with_missing = [
                 col for col in self.columns_with_missing if col in columns_to_impute
             ]
+            self.numeric_columns_with_missing = [
+                col for col in self.numeric_columns_with_missing if col in columns_to_impute
+            ]
 
-        if not self.columns_with_missing:
+        if not self.numeric_columns_with_missing:
             if self.verbose:
-                print("No columns to impute. Returning original data.")
-            return data.copy()
+                print("No numeric columns to impute with PMM. Returning data with simple imputation for non-numeric columns.")
+            # Still do simple imputation for non-numeric columns
+            return self._initialize_imputation(data)
 
         # Initialize with simple imputation
         imputed = self._initialize_imputation(data)
 
-        # Fit correlation analyzer on complete cases first
-        complete_data = data.dropna()
+        # Fit correlation analyzer on complete cases first, but only on numeric columns
+        numeric_cols = [col for col in data.columns
+                       if data[col].dtype in [np.float64, np.float32, np.int64, np.int32, np.float16, np.int16, np.int8]]
+        complete_data = data[numeric_cols].dropna()
         if len(complete_data) > 0:
             self.correlation_analyzer.fit(complete_data)
         else:
-            # If no complete cases, use initialized data
-            self.correlation_analyzer.fit(imputed)
+            # If no complete cases, use initialized numeric data
+            self.correlation_analyzer.fit(imputed[numeric_cols])
 
-        # Determine imputation order based on correlations
+        # Determine imputation order based on correlations (only for numeric columns)
         self.imputation_order = self.correlation_analyzer.get_imputation_order(
-            self.columns_with_missing
+            self.numeric_columns_with_missing
         )
 
         if self.verbose:
@@ -295,12 +322,15 @@ class HybridMICEImputer:
         --------
         self : HybridMICEImputer
         """
-        complete_data = data.dropna()
+        # Only fit on numeric columns
+        numeric_cols = [col for col in data.columns
+                       if data[col].dtype in [np.float64, np.float32, np.int64, np.int32, np.float16, np.int16, np.int8]]
+        complete_data = data[numeric_cols].dropna()
         if len(complete_data) > 0:
             self.correlation_analyzer.fit(complete_data)
         else:
-            # If no complete cases, use all data
-            self.correlation_analyzer.fit(data)
+            # If no complete cases, use all numeric data
+            self.correlation_analyzer.fit(data[numeric_cols])
 
         return self
 
@@ -328,10 +358,14 @@ class HybridMICEImputer:
         diagnostics : dict
             Dictionary containing diagnostic information
         """
+        excluded_columns = list(set(self.columns_with_missing) - set(self.numeric_columns_with_missing))
+
         diagnostics = {
             'convergence_history': self.convergence_history,
             'imputation_order': self.imputation_order,
             'columns_with_missing': self.columns_with_missing,
+            'numeric_columns_imputed': self.numeric_columns_with_missing,
+            'excluded_columns': excluded_columns,
             'correlation_matrix': self.correlation_analyzer.correlation_matrix,
             'predictor_sets': self.correlation_analyzer.predictor_sets
         }
