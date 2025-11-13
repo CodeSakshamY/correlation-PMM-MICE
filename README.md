@@ -143,6 +143,41 @@ imputer.plot_convergence()
 imputer.correlation_analyzer.visualize_correlations()
 ```
 
+### Working with Excel (.xlsx) Files
+
+The library provides convenient methods for loading and saving Excel files:
+
+```python
+from hybrid_imputer import HybridMICEImputer
+
+# Load data from Excel file
+data = HybridMICEImputer.load_data('data.xlsx')
+
+# Or load from a specific sheet
+data = HybridMICEImputer.load_data('data.xlsx', sheet_name='Sheet2')
+data = HybridMICEImputer.load_data('data.xlsx', sheet_name=1)  # By index
+
+# Perform imputation
+imputer = HybridMICEImputer(verbose=True)
+data_imputed = imputer.fit_transform(data)
+
+# Save to Excel file
+HybridMICEImputer.save_data(data_imputed, 'imputed_data.xlsx')
+
+# Save with custom sheet name
+HybridMICEImputer.save_data(
+    data_imputed,
+    'imputed_data.xlsx',
+    sheet_name='Imputed Data'
+)
+
+# The same methods work for CSV files
+data = HybridMICEImputer.load_data('data.csv')
+HybridMICEImputer.save_data(data_imputed, 'imputed_data.csv')
+```
+
+**Note**: Excel file support requires the `openpyxl` package, which is included in `requirements.txt`.
+
 ## API Reference
 
 ### HybridMICEImputer
@@ -165,6 +200,8 @@ Main class for hybrid imputation.
 - `transform(data)`: Transform data using fitted imputer
 - `get_diagnostics()`: Get detailed diagnostic information
 - `plot_convergence()`: Visualize convergence history
+- `load_data(file_path, sheet_name=0, **kwargs)`: Load data from CSV or Excel file (static method)
+- `save_data(data, file_path, sheet_name='Sheet1', index=False, **kwargs)`: Save data to CSV or Excel file (static method)
 
 ### CorrelationAnalyzer
 
@@ -258,6 +295,7 @@ This includes:
 - Comparison of different model types
 - Diagnostic features
 - Partial imputation examples
+- Excel (.xlsx) file support
 
 ## Requirements
 
@@ -268,6 +306,7 @@ This includes:
 - scipy >= 1.7.0
 - matplotlib >= 3.4.0 (optional, for visualization)
 - seaborn >= 0.11.0 (optional, for correlation heatmaps)
+- openpyxl >= 3.0.0 (for Excel .xlsx file support)
 
 ## Contributing
 

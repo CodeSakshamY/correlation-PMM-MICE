@@ -259,6 +259,79 @@ def example_partial_imputation():
     print(data_imputed.isnull().sum())
 
 
+def example_xlsx_file_support():
+    """Example 5: Loading and saving Excel (.xlsx) files."""
+    print("\n\n" + "=" * 70)
+    print("Example 5: Excel (.xlsx) File Support")
+    print("=" * 70)
+
+    # Create sample data
+    data_missing, data_complete = create_sample_data_with_missing(
+        n_samples=500,
+        missing_rate=0.15
+    )
+
+    # Save data to Excel file
+    print("\n1. Saving data with missing values to Excel file...")
+    HybridMICEImputer.save_data(
+        data_missing,
+        'data_with_missing.xlsx',
+        sheet_name='Original Data'
+    )
+    print("   Saved to: data_with_missing.xlsx")
+
+    # Load data from Excel file
+    print("\n2. Loading data from Excel file...")
+    data_loaded = HybridMICEImputer.load_data('data_with_missing.xlsx')
+    print(f"   Loaded {len(data_loaded)} rows, {len(data_loaded.columns)} columns")
+    print(f"   Missing values: {data_loaded.isnull().sum().sum()}")
+
+    # Perform imputation
+    print("\n3. Imputing missing values...")
+    imputer = HybridMICEImputer(
+        n_iterations=10,
+        verbose=False,
+        random_state=42
+    )
+    data_imputed = imputer.fit_transform(data_loaded)
+    print(f"   Imputation complete!")
+    print(f"   Remaining missing values: {data_imputed.isnull().sum().sum()}")
+
+    # Save imputed data to Excel file
+    print("\n4. Saving imputed data to Excel file...")
+    HybridMICEImputer.save_data(
+        data_imputed,
+        'data_imputed.xlsx',
+        sheet_name='Imputed Data'
+    )
+    print("   Saved to: data_imputed.xlsx")
+
+    # Also demonstrate CSV support
+    print("\n5. The same methods work for CSV files...")
+    HybridMICEImputer.save_data(data_imputed, 'data_imputed.csv')
+    data_from_csv = HybridMICEImputer.load_data('data_imputed.csv')
+    print(f"   CSV: {len(data_from_csv)} rows loaded")
+
+    # Calculate imputation accuracy
+    print("\n6. Imputation Quality Assessment:")
+    total_rmse = 0
+    n_cols = 0
+    for col in data_missing.columns:
+        missing_mask = data_missing[col].isnull()
+        if missing_mask.any():
+            true_values = data_complete.loc[missing_mask, col]
+            imputed_values = data_imputed.loc[missing_mask, col]
+            rmse = np.sqrt(np.mean((true_values - imputed_values) ** 2))
+            total_rmse += rmse
+            n_cols += 1
+            print(f"   {col}: RMSE = {rmse:.4f}")
+
+    avg_rmse = total_rmse / n_cols if n_cols > 0 else 0
+    print(f"\n   Average RMSE: {avg_rmse:.4f}")
+
+    print("\n✓ Files created: data_with_missing.xlsx, data_imputed.xlsx, data_imputed.csv")
+
+
 if __name__ == "__main__":
     # Run all examples
     print("\n")
@@ -270,6 +343,7 @@ if __name__ == "__main__":
     example_custom_configuration()
     example_diagnostics()
     example_partial_imputation()
+    example_xlsx_file_support()
 
     print("\n\n" + "*" * 70)
     print("All examples completed!")
