@@ -27,12 +27,12 @@ class HybridMICEImputer:
 
     def __init__(
         self,
-        n_iterations: int = 15,
+        n_iterations: int = 20,
         n_neighbors: int = 10,
-        correlation_threshold: float = 0.25,
+        correlation_threshold: float = 0.20,
         max_predictors: int = 15,
         pmm_model_type: str = 'bayesian',
-        convergence_threshold: float = 0.001,
+        convergence_threshold: float = 0.01,
         random_state: Optional[int] = None,
         verbose: bool = False,
         exclude_columns: Optional[List[str]] = None,
@@ -43,18 +43,18 @@ class HybridMICEImputer:
 
         Parameters:
         -----------
-        n_iterations : int, default=15
-            Maximum number of MICE iterations (increased for better convergence)
+        n_iterations : int, default=20
+            Maximum number of MICE iterations (optimized for convergence)
         n_neighbors : int, default=10
-            Number of neighbors for PMM (increased for better donor pool)
-        correlation_threshold : float, default=0.25
+            Number of neighbors for PMM donor pool (balanced for diversity and accuracy)
+        correlation_threshold : float, default=0.20
             Minimum correlation to consider for predictor selection (lowered for more predictors)
         max_predictors : int, default=15
-            Maximum number of predictors to use per variable (increased for better modeling)
+            Maximum number of predictors to use per variable (optimized for modeling)
         pmm_model_type : str, default='bayesian'
-            Model type for PMM: 'linear', 'bayesian', or 'rf' (bayesian for uncertainty)
-        convergence_threshold : float, default=0.001
-            Threshold for convergence detection
+            Model type for PMM: 'linear', 'bayesian', or 'rf' (bayesian adds uncertainty)
+        convergence_threshold : float, default=0.01
+            Threshold for convergence detection (relaxed for practical convergence)
         random_state : int, optional
             Random state for reproducibility
         verbose : bool, default=False
@@ -316,11 +316,25 @@ class HybridMICEImputer:
                     )
 
                     # Update only the originally missing values
-                    imputed.loc[missing_mask, col] = imputed_col[missing_mask]
+                    new_imputed_values = imputed_col[missing_mask]
+
+                    # Validation: Check for diversity in imputed values
+                    n_unique = len(np.unique(new_imputed_values))
+                    n_total = len(new_imputed_values)
+
+                    if n_unique == 1 and n_total > 1:
+                        if self.verbose:
+                            print(f"  {col}: WARNING - All imputed values identical, adding noise for diversity")
+                        # Add small random noise to break ties
+                        noise = self.imputer.rng.normal(0, np.std(imputed[col]) * 0.01, n_total)
+                        new_imputed_values = new_imputed_values + noise
+
+                    imputed.loc[missing_mask, col] = new_imputed_values
 
                     if self.verbose:
                         n_weighted = len(filtered_weights)
-                        print(f"  {col}: Imputed with {len(valid_predictors)} predictors ({n_weighted} weighted)")
+                        diversity_pct = 100 * n_unique / max(n_total, 1)
+                        print(f"  {col}: Imputed with {len(valid_predictors)} predictors ({n_weighted} weighted), {n_unique}/{n_total} unique ({diversity_pct:.1f}%)")
 
                 except Exception as e:
                     if self.verbose:

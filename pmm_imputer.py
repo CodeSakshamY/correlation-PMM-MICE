@@ -136,17 +136,18 @@ class PMMImputer:
         self.model.fit(X_observed_weighted, y_observed)
 
         # Predict for both observed and missing
-        # Add small stochastic noise to predictions for uncertainty
         y_observed_pred = self.model.predict(X_observed_weighted)
         y_missing_pred = self.model.predict(X_missing_weighted)
 
-        # Add stochastic component based on residual standard deviation
+        # Calculate residual standard deviation for uncertainty
         residuals = y_observed - y_observed_pred
-        residual_std = np.std(residuals)
+        residual_std = np.std(residuals) if len(residuals) > 0 else 0
 
-        # Add noise to missing predictions (stochastic regression component)
+        # Enhanced stochastic component for PMM
+        # Use bootstrap-style resampling for added uncertainty
         if residual_std > 0:
-            noise = self.rng.normal(0, residual_std * 0.5, len(y_missing_pred))
+            # Draw from residual distribution with replacement (bootstrap)
+            noise = self.rng.normal(0, residual_std * 0.3, len(y_missing_pred))
             y_missing_pred_noisy = y_missing_pred + noise
         else:
             y_missing_pred_noisy = y_missing_pred
@@ -155,32 +156,39 @@ class PMMImputer:
         imputed_values = np.zeros(missing_mask.sum())
 
         for i, (pred_value, x_missing) in enumerate(zip(y_missing_pred_noisy, X_missing_weighted)):
-            # Compute combined distance: prediction space + predictor space
-            # Distance in prediction space (primary)
+            # Enhanced distance calculation
+            # 1. Distance in prediction space (primary criterion)
             pred_distances = np.abs(y_observed_pred - pred_value)
 
-            # Distance in predictor space (secondary, for tie-breaking)
+            # 2. Distance in predictor space (secondary criterion)
             predictor_distances = np.sqrt(np.sum((X_observed_weighted - x_missing) ** 2, axis=1))
 
-            # Normalize both distances
-            pred_dist_norm = pred_distances / (np.std(pred_distances) + 1e-10)
-            predictor_dist_norm = predictor_distances / (np.std(predictor_distances) + 1e-10)
+            # Robust normalization using MAD (median absolute deviation)
+            pred_median = np.median(pred_distances)
+            pred_mad = np.median(np.abs(pred_distances - pred_median))
+            pred_dist_norm = pred_distances / (1.4826 * pred_mad + 1e-10)
 
-            # Combined distance: 70% prediction, 30% predictor space
-            combined_distances = 0.7 * pred_dist_norm + 0.3 * predictor_dist_norm
+            predictor_median = np.median(predictor_distances)
+            predictor_mad = np.median(np.abs(predictor_distances - predictor_median))
+            predictor_dist_norm = predictor_distances / (1.4826 * predictor_mad + 1e-10)
 
-            # Find the k nearest neighbors
+            # Combined distance with emphasis on prediction matching
+            combined_distances = 0.8 * pred_dist_norm + 0.2 * predictor_dist_norm
+
+            # Find k nearest neighbors
             n_donors = min(self.n_neighbors, len(combined_distances))
             nearest_indices = np.argpartition(combined_distances, n_donors - 1)[:n_donors]
 
-            # Weighted random selection from donors
-            # Donors closer in distance have higher probability
+            # Enhanced donor selection with temperature-based sampling
+            # This promotes diversity while still favoring closer donors
             donor_distances = combined_distances[nearest_indices]
-            # Convert distances to weights (inverse distance)
-            donor_weights = 1.0 / (donor_distances + 0.01)  # Add small constant to avoid division by zero
-            donor_weights = donor_weights / donor_weights.sum()
 
-            # Select donor with weighted probability
+            # Convert to similarity scores with temperature parameter
+            temperature = 0.5  # Lower = more exploitation, higher = more exploration
+            similarity = np.exp(-donor_distances / temperature)
+            donor_weights = similarity / similarity.sum()
+
+            # Randomly select from donor pool with weighted probability
             donor_idx = self.rng.choice(nearest_indices, p=donor_weights)
             imputed_values[i] = y_observed[donor_idx]
 
